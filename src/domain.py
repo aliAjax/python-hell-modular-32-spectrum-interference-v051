@@ -2,20 +2,30 @@ from datetime import datetime
 
 
 class DomainError(Exception):
-    def __init__(self, code, message, status=400):
+    def __init__(self, code, message, status=400, details=None):
         super().__init__(message)
         self.code = code
         self.status = status
+        self.details = details
 
 
 class ConflictError(DomainError):
-    def __init__(self, code, message):
-        super().__init__(code, message, 409)
+    def __init__(self, code, message, details=None):
+        super().__init__(code, message, 409, details)
 
 
 class NotFoundError(DomainError):
     def __init__(self, code, message):
         super().__init__(code, message, 404)
+
+
+class ServiceResult(dict):
+    """写操作返回值：dict 本体即响应 JSON，附带 HTTP 状态与幂等回放标记。"""
+
+    def __init__(self, payload, status=200, replayed=False):
+        super().__init__(payload)
+        self.status = status
+        self.replayed = replayed
 
 
 def require_text(payload, name):
@@ -88,4 +98,27 @@ def normalize_source(payload):
         "region": region,
         "station_id": payload.get("station_id"),
         "frequency_mhz": payload.get("frequency_mhz"),
+    }
+
+
+def normalize_window(payload):
+    region = require_text(payload, "region")
+    start_mhz = number(payload, "start_mhz", 0.001, 300000)
+    end_mhz = number(payload, "end_mhz", 0.001, 300000)
+    if end_mhz <= start_mhz:
+        raise DomainError("invalid_window_range", "end_mhz 必须大于 start_mhz")
+    starts_at = parse_timestamp(payload, "starts_at")
+    ends_at = parse_timestamp(payload, "ends_at")
+    if ends_at <= starts_at:
+        raise DomainError("invalid_window_range", "ends_at 必须晚于 starts_at")
+    label = payload.get("label")
+    if label is not None:
+        label = str(label).strip() or None
+    return {
+        "region": region,
+        "start_mhz": start_mhz,
+        "end_mhz": end_mhz,
+        "starts_at": starts_at,
+        "ends_at": ends_at,
+        "label": label,
     }

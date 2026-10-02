@@ -3,21 +3,62 @@ import math
 from .domain import DomainError
 
 ENTITY_TYPE = "spectrum_interference"
+WINDOW_ENTITY_TYPE = "protection_window"
 INITIAL_STATUS = "pending"
 CREATE_ROLES = {"analyst", "monitor"}
 SOURCE_ROLES = {"analyst", "monitor", "field_operator"}
+WINDOW_WRITE_ROLES = {"coordinator"}
 ACTION_ROLES = {
     "assess": {"analyst", "monitor"},
     "locate": {"field_operator", "analyst"},
-    "suspend": {"coordinator", "regulator"},
+    "suspend": {"coordinator"},
+    "reconfirm": {"coordinator"},
     "coordinate": {"coordinator"},
     "resolve": {"coordinator", "regulator"},
     "correct_measurement": {"analyst", "monitor"},
     "cancel": {"coordinator"},
 }
 ENFORCE_REGION = True
-REGION_SENSITIVE_ACTIONS = {"suspend", "coordinate", "resolve", "cancel"}
-ACTION_REQUIRES_VERSION = {"suspend", "coordinate", "resolve", "cancel"}
+REGION_SENSITIVE_ACTIONS = {"suspend", "reconfirm", "coordinate", "resolve", "cancel"}
+ACTION_REQUIRES_VERSION = {"suspend", "reconfirm", "coordinate", "resolve", "cancel"}
+
+# 已经进入处置流程、保护时段调整时需要退回复核的事件状态
+DISPOSITION_STATUSES = {"located", "suspended", "coordinating", "review"}
+TERMINAL_STATUSES = {"resolved", "cancelled"}
+SUSPEND_FROM = {"located"}
+RECONFIRM_FROM = {"review"}
+
+
+def authorization_code(payload):
+    code = payload.get("authorization_code")
+    if not isinstance(code, str) or not code.strip():
+        raise DomainError("field_required", "authorization_code 不能为空")
+    code = code.strip()
+    if not code.startswith("REG-"):
+        raise DomainError("invalid_authorization", "停用授权编号无效", 403)
+    return code
+
+
+def frequency_in_window(item_payload, window):
+    """事件频段与保护时段频段相交即视为落在覆盖范围内。
+
+    window 可以是完整行（频段嵌在 payload 中），也可以是已解包的 payload。
+    """
+    if "payload" in window and isinstance(window["payload"], dict):
+        window = window["payload"]
+    center = float(item_payload["frequency_mhz"])
+    half = float(item_payload.get("bandwidth_mhz", 0.0)) / 2.0
+    item_low = center - half
+    item_high = center + half
+    return item_high > float(window["start_mhz"]) and item_low < float(window["end_mhz"])
+
+
+def item_covered_by_window(item_payload, window):
+    if window is None:
+        return False
+    if item_payload.get("region") != window["region"]:
+        return False
+    return frequency_in_window(item_payload, window)
 
 
 def assess(payload):
@@ -48,7 +89,7 @@ def _text(payload, name):
     return value.strip()
 
 
-def apply_action(item, action, payload, actor, role):
+def apply_action(item, action, payload, actor, role, authorization=None):
     status = item["status"]
     current = dict(item["payload"])
 
@@ -83,13 +124,26 @@ def apply_action(item, action, payload, actor, role):
         current["location"] = {"label": location, "confidence": confidence}
         return "located", current, {"location": current["location"]}
 
-    if action == "suspend":
-        _need_status(item, {"located", "suspended"})
-        authorization = _text(payload, "authorization_code")
-        if not authorization.startswith("REG-"):
+    if action in ("suspend", "reconfirm"):
+        # suspend：首次停用，必须落在当前保护时段覆盖范围内（repository 已做事务内校验）
+        # reconfirm：保护时段调整后授权失效，协调员在新时段上重新确认
+        _need_status(item, {"located"} if action == "suspend" else {"review"})
+        if authorization is None:
+            raise DomainError("no_protection_window", "当前没有匹配的保护时段，不能停用", 409)
+        code = _text(payload, "authorization_code")
+        if not code.startswith("REG-"):
             raise DomainError("invalid_authorization", "停用授权编号无效", 403)
-        current["suspend_authorization"] = authorization
-        return "suspended", current, {"authorization_code": authorization}
+        current["suspend_authorization"] = code
+        current["authorization_detail"] = authorization
+        if action == "reconfirm":
+            current.pop("current_review", None)
+        return "suspended", current, {
+            "authorization_code": code,
+            "authorization_id": authorization["id"],
+            "window_id": authorization["window_id"],
+            "window_version": authorization["window_version"],
+            "reconfirmed": action == "reconfirm",
+        }
 
     if action == "coordinate":
         _need_status(item, {"suspended"})
@@ -106,7 +160,7 @@ def apply_action(item, action, payload, actor, role):
         return "resolved", current, {"evidence": current["resolution"]["evidence"]}
 
     if action == "cancel":
-        _need_status(item, {"pending", "assessed"})
+        _need_status(item, {"pending", "assessed", "review"})
         reason = _text(payload, "reason")
         current["cancellation"] = {"reason": reason, "actor": actor}
         return "cancelled", current, {"reason": reason}
