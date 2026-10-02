@@ -1,11 +1,15 @@
 import math
+from datetime import datetime
 
 from .domain import DomainError
 
 ENTITY_TYPE = "spectrum_interference"
+PERIOD_ENTITY_TYPE = "protection_period"
 INITIAL_STATUS = "pending"
+REVIEW_STATUS = "review"
 CREATE_ROLES = {"analyst", "monitor"}
 SOURCE_ROLES = {"analyst", "monitor", "field_operator"}
+PERIOD_ROLES = {"coordinator", "regulator"}
 ACTION_ROLES = {
     "assess": {"analyst", "monitor"},
     "locate": {"field_operator", "analyst"},
@@ -18,6 +22,8 @@ ACTION_ROLES = {
 ENFORCE_REGION = True
 REGION_SENSITIVE_ACTIONS = {"suspend", "coordinate", "resolve", "cancel"}
 ACTION_REQUIRES_VERSION = {"suspend", "coordinate", "resolve", "cancel"}
+PERIOD_ACTIONS = {"update"}
+PERIOD_REQUIRES_VERSION = {"update"}
 
 
 def assess(payload):
@@ -48,7 +54,35 @@ def _text(payload, name):
     return value.strip()
 
 
-def apply_action(item, action, payload, actor, role):
+def _parse_ts(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def validate_suspend_coverage(item, period):
+    frequency = float(item["payload"]["frequency_mhz"])
+    if not (float(period["frequency_start_mhz"]) <= frequency <= float(period["frequency_end_mhz"])):
+        raise DomainError("coverage_mismatch", "干扰频率不在保护时段频段范围内", 409)
+    detected = _parse_ts(item["payload"]["detected_at"])
+    start = _parse_ts(period["start_at"])
+    end = _parse_ts(period["end_at"])
+    if not (start <= detected <= end):
+        raise DomainError("coverage_mismatch", "干扰时间不在保护时段时间范围内", 409)
+
+
+def build_suspend_authorization(authorization_code, period):
+    return {
+        "authorization_code": authorization_code,
+        "protection_period_id": period["id"],
+        "coverage": {
+            "frequency_start_mhz": period["frequency_start_mhz"],
+            "frequency_end_mhz": period["frequency_end_mhz"],
+            "start_at": period["start_at"],
+            "end_at": period["end_at"],
+        },
+    }
+
+
+def apply_action(item, action, payload, actor, role, protection_period=None):
     status = item["status"]
     current = dict(item["payload"])
 
@@ -84,12 +118,17 @@ def apply_action(item, action, payload, actor, role):
         return "located", current, {"location": current["location"]}
 
     if action == "suspend":
-        _need_status(item, {"located", "suspended"})
+        _need_status(item, {"located", "suspended", REVIEW_STATUS})
         authorization = _text(payload, "authorization_code")
         if not authorization.startswith("REG-"):
             raise DomainError("invalid_authorization", "停用授权编号无效", 403)
-        current["suspend_authorization"] = authorization
-        return "suspended", current, {"authorization_code": authorization}
+        period_id = payload.get("protection_period_id")
+        if period_id is None:
+            raise DomainError("protection_period_required", "停用授权必须关联保护时段")
+        if protection_period is None or int(protection_period["id"]) != int(period_id):
+            raise DomainError("protection_period_required", "停用授权必须关联保护时段")
+        current["suspend_authorization"] = build_suspend_authorization(authorization, protection_period)
+        return "suspended", current, {"authorization_code": authorization, "protection_period_id": period_id}
 
     if action == "coordinate":
         _need_status(item, {"suspended"})

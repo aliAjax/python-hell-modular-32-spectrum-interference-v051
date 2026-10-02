@@ -30,10 +30,20 @@ class WorkflowTest(unittest.TestCase):
             "detected_at": "2026-09-27T10:00:00+00:00",
             "reporter": "monitor-1",
         }, "analyst-1", "analyst")
+        period = self.service.create_protection_period({
+            "name": "重大活动保护",
+            "frequency_start_mhz": 2400.0,
+            "frequency_end_mhz": 2500.0,
+            "start_at": "2026-09-27T00:00:00+00:00",
+            "end_at": "2026-09-28T00:00:00+00:00",
+            "region": "north",
+        }, "coord-1", "coordinator", "north")
         item = self.service.act(item["id"], "assess", {}, "analyst-1", "analyst", item["version"])
         self.assertEqual(item["payload"]["assessment"]["level"], "critical")
         item = self.service.act(item["id"], "locate", {"location": "cell-7", "confidence": 0.9}, "field-1", "field_operator", item["version"])
-        item = self.service.act(item["id"], "suspend", {"authorization_code": "REG-NORTH-1"}, "coord-1", "coordinator", item["version"], "north")
+        item = self.service.act(item["id"], "suspend", {"authorization_code": "REG-NORTH-1", "protection_period_id": period["id"]}, "coord-1", "coordinator", item["version"], "north")
+        self.assertEqual(item["status"], "suspended")
+        self.assertEqual(item["payload"]["suspend_authorization"]["protection_period_id"], period["id"])
         item = self.service.act(item["id"], "coordinate", {"coordination_agreement": "AGC-7"}, "coord-1", "coordinator", item["version"], "north")
         item = self.service.act(item["id"], "resolve", {"measurement_cleared": True, "evidence": "scan-7"}, "coord-1", "coordinator", item["version"], "north")
         self.assertEqual(item["status"], "resolved")

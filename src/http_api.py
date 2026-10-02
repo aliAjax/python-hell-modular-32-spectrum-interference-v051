@@ -20,6 +20,9 @@ def build_handler(service, static_dir):
             region = self.headers.get("X-Region", "").strip() or None
             return actor, role, region
 
+        def _request_id(self):
+            return self.headers.get("X-Request-Id", "").strip() or None
+
         def _json_body(self):
             length = int(self.headers.get("Content-Length", "0") or "0")
             if not length:
@@ -52,12 +55,16 @@ def build_handler(service, static_dir):
                     return self._send(200, service.state())
                 if path == "/api/items":
                     return self._send(200, {"items": service.list_items()})
+                if path == "/api/protection-periods":
+                    return self._send(200, {"protection_periods": service.list_protection_periods()})
                 parts = [part for part in path.split("/") if part]
                 if len(parts) == 3 and parts[:2] == ["api", "items"]:
                     return self._send(200, service.get_item(int(parts[2])))
                 if len(parts) == 4 and parts[:2] == ["api", "items"] and parts[3] == "audit":
                     item = service.get_item(int(parts[2]))
                     return self._send(200, {"events": item["audit"]})
+                if len(parts) == 3 and parts[:2] == ["api", "protection-periods"]:
+                    return self._send(200, service.get_protection_period(int(parts[2])))
                 if path == "/":
                     file_path = os.path.join(static_dir, "index.html")
                     with open(file_path, "rb") as handle:
@@ -73,19 +80,28 @@ def build_handler(service, static_dir):
             actor = role = region = None
             try:
                 actor, role, region = self._identity()
+                request_id = self._request_id()
                 path = urlparse(self.path).path
                 payload = self._json_body()
                 parts = [part for part in path.split("/") if part]
                 if parts == ["api", "items"]:
-                    return self._send(201, service.create_item(payload, actor, role, region))
+                    return self._send(201, service.create_item(payload, actor, role, region, request_id))
                 if len(parts) == 4 and parts[:2] == ["api", "items"] and parts[3] == "sources":
-                    return self._send(201, service.add_source(int(parts[2]), payload, actor, role, region))
+                    return self._send(201, service.add_source(int(parts[2]), payload, actor, role, region, request_id))
                 if len(parts) == 4 and parts[:2] == ["api", "items"] and parts[3] == "actions":
                     action = payload.pop("action", "")
                     if not action:
                         raise DomainError("action_required", "缺少 action", 400)
                     expected = payload.pop("expected_version", None)
-                    return self._send(200, service.act(int(parts[2]), action, payload, actor, role, expected, region))
+                    return self._send(200, service.act(int(parts[2]), action, payload, actor, role, expected, region, request_id))
+                if parts == ["api", "protection-periods"]:
+                    return self._send(201, service.create_protection_period(payload, actor, role, region, request_id))
+                if len(parts) == 4 and parts[:2] == ["api", "protection-periods"] and parts[3] == "actions":
+                    action = payload.pop("action", "")
+                    if not action:
+                        raise DomainError("action_required", "缺少 action", 400)
+                    expected = payload.pop("expected_version", None)
+                    return self._send(200, service.update_protection_period(int(parts[2]), action, payload, actor, role, expected, region, request_id))
                 return self._send(404, {"error": "not_found", "message": "接口不存在"})
             except DomainError as exc:
                 return self._error(exc)

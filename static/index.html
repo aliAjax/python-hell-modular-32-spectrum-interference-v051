@@ -1,5 +1,11 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>无线电频谱干扰调查</title><body><h1>无线电频谱干扰调查与协调</h1><p>使用 JSON API 创建干扰事件、记录来源、定位和执行处置动作。</p><pre>GET /health
-GET /api/state
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>无线电频谱干扰调查</title><body><h1>无线电频谱干扰调查与协调</h1><p>使用 JSON API 创建干扰事件、记录来源、定位、执行处置动作，并设置保护时段。</p><p>写操作可携带 <code>X-Request-Id</code> 头用于幂等重试；处置动作需携带 <code>expected_version</code> 进行乐观并发控制。</p><pre>GET  /health
+GET  /api/state
+GET  /api/items
 POST /api/items
 POST /api/items/{id}/sources
-POST /api/items/{id}/actions</pre></body></html>
+POST /api/items/{id}/actions
+GET  /api/items/{id}/audit
+GET  /api/protection-periods
+POST /api/protection-periods
+GET  /api/protection-periods/{id}
+POST /api/protection-periods/{id}/actions</pre></body></html>

@@ -89,3 +89,28 @@ def normalize_source(payload):
         "station_id": payload.get("station_id"),
         "frequency_mhz": payload.get("frequency_mhz"),
     }
+
+
+def normalize_protection_period(payload):
+    name = require_text(payload, "name")
+    frequency_start = number(payload, "frequency_start_mhz", 0.001, 300000)
+    frequency_end = number(payload, "frequency_end_mhz", 0.001, 300000)
+    if frequency_end < frequency_start:
+        raise DomainError("invalid_frequency_band", "结束频率不能小于起始频率")
+    start_at = parse_timestamp(payload, "start_at")
+    end_at = parse_timestamp(payload, "end_at")
+    if end_at <= start_at:
+        raise DomainError("invalid_time_range", "结束时间必须晚于起始时间")
+    region = payload.get("region")
+    if region is not None:
+        region = str(region).strip() or None
+    stable_key = "pp|%s|%s" % (name, start_at)
+    return {
+        "name": name,
+        "frequency_start_mhz": frequency_start,
+        "frequency_end_mhz": frequency_end,
+        "start_at": start_at,
+        "end_at": end_at,
+        "region": region,
+        "_stable_key": stable_key,
+    }
